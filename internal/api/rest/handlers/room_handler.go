@@ -210,6 +210,7 @@ func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 				lost := h.gameService.CheckLost(c.Request.Context(), dino, cacti)
 				if lost {
 					log.Println("player lost")
+					return
 				}
 
 				x1, y1, x2, y2 := dino.GetRect()
