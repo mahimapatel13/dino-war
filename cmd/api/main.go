@@ -25,8 +25,7 @@ func main(){
 	r.Use(cors.New(cors.Config{
         AllowOrigins:     []string{
 			"http://localhost:5173",
-			"https://focus-lock-in.vercel.app",
-
+			"https://dino-war-frontend-black.vercel.app",
 		},
         AllowMethods:     []string{"POST", "GET", "OPTIONS", "PUT", "DELETE"},
         AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
