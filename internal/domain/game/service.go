@@ -47,7 +47,7 @@ func NewService() Service {
 	ground_height = 300
 
 	// physics (pixels per second)
-	speed = 200
+	speed = 100
 	gravity = 1200
 	jump_speed = 450
 
@@ -104,7 +104,7 @@ func (s *service) UpdateDino(ctx context.Context, dino *Dino, duration time.Dura
 	if dino.Jumping {
 
 		dino.Y += dino.YVelocity * delta
-		dino.YVelocity -= gravity * delta
+		dino.YVelocity += gravity * delta
 
 		// land on ground
 		if dino.Y >= ground_height {
