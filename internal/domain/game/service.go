@@ -47,7 +47,7 @@ func NewService() Service {
 	ground_height = 300
 
 	// physics (pixels per second)
-	speed = 100
+	speed = 50
 	gravity = 1200
 	jump_speed = 450
 
