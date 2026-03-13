@@ -170,7 +170,7 @@ func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 
 	h.service.SendToBroadcast(start)
 
-	ticker := time.NewTicker(30 * time.Millisecond)
+	ticker := time.NewTicker(16 * time.Millisecond)
 	lastTime := time.Now()
 
 	for {
