@@ -69,7 +69,6 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-
 // JoinRoomRequest will join the client in a particular room
 func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 
@@ -104,12 +103,8 @@ func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 		return
 	}
 
-	h.service.InsertIntoRoom(c.Request.Context(), roomID, false, ws)
-
-	// get participants again after insert
-	participants, _ = h.service.Get(c.Request.Context(), roomID)
-
-	log.Printf("room %s now has %d players", roomID, len(participants))
+	player := h.service.InsertIntoRoom(c.Request.Context(), roomID, false, ws)
+	go player.WritePump()
 
 	// wait until second player joins
 	for {
@@ -121,127 +116,140 @@ func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 	}
 
 	participants, _ = h.service.Get(c.Request.Context(), roomID)
+	log.Printf("room %s now has %d players", roomID, len(participants))
 
-	// create dinos for both players
-	dinos := make(map[*websocket.Conn]*game.Dino)
 
-	for _, p := range participants {
-		d := h.gameService.NewDino(c.Request.Context())
-		dinos[p.Conn] = &d
-	}
+	isHost := participants[0].Conn == ws
+	inputs := h.service.GetOrCreateInputChannel(c.Request.Context(), roomID)
 
-	cacti := h.gameService.NewCacti(c.Request.Context())
-
-	inputs := make(chan game.PlayerInput)
-
-	// read loop for THIS connection
+	// read loop for THIS connection — runs for both host and guest
 	go func() {
 		for {
-			var msg room.BroadcastMsg
+			var msg map[string]any
 
-			err := ws.ReadJSON(&msg.Message)
+			err := ws.ReadJSON(&msg)
 			if err != nil {
 				log.Println("read error:", err)
 				return
 			}
 
-			if msg.Message["JMP"] == "true" {
+			if msg["JMP"] == "true" {
 				log.Println("jmp!")
-				inputs <- game.PlayerInput{
+				// non-blocking send so a stalled game loop doesn't block reads
+				select {
+				case inputs <- game.PlayerInput{
 					Player: ws,
 					Action: "jump",
+				}:
+				default:
 				}
 			}
-
-			msg.Client = ws
-			msg.RoomID = roomID
-			h.service.SendToBroadcast(msg)
 		}
 	}()
 
-	// broadcast game start
+	// broadcast game start to both players
 	start := room.BroadcastMsg{
 		Message: map[string]any{
 			"GAME_START": true,
-			"SEED": seed,
+			"SEED":       seed,
 		},
 		RoomID: roomID,
 	}
-
 	h.service.SendToBroadcast(start)
 
+	if !isHost {
+		log.Println("guest connected, waiting...")
+		// block until connection closes
+		select {}
+	}
+
+	log.Println("host running game loop")
+
+	dinos := make([]*game.Dino, len(participants))
+	connToIndex := make(map[*websocket.Conn]int)
+	for i, p := range participants {
+		d := h.gameService.NewDino(c.Request.Context())
+		dinos[i] = &d
+		connToIndex[p.Conn] = i
+	}
+
+	cacti := h.gameService.NewCacti(c.Request.Context())
+
 	ticker := time.NewTicker(16 * time.Millisecond)
+	defer ticker.Stop()
+
 	lastTime := time.Now()
 
 	for {
-		select {
-
-		case input := <-inputs:
-
-			dino := dinos[input.Player]
-
-			if input.Action == "jump" && dino.OnGround && !dino.Jumping {
-				h.gameService.HandleJump(c.Request.Context(), dino)
-			}
-
-		case t := <-ticker.C:
-
-			duration := t.Sub(lastTime)
-			lastTime = t
-
-			// update both players
-			for _, dino := range dinos {
-				h.gameService.UpdateDino(c.Request.Context(), dino, duration)
-			}
-
-			// log.Printf("cactus count before: %d", len(cacti))
-
-			h.gameService.UpdateSpeedScale(c.Request.Context(), duration)
-			cacti = h.gameService.UpdateCactus(c.Request.Context(), cacti, seed, duration)
-
-			var msg room.BroadcastMsg
-			msg.Message = make(map[string]any)
-			msg.RoomID = roomID
-
-			players := []map[string]float32{}
-
-			for _, dino := range dinos {
-
-				lost := h.gameService.CheckLost(c.Request.Context(), dino, cacti)
-				if lost {
-					log.Println("player lost")
-					return
+		drainInputs:
+		for {
+			select {
+			case input := <-inputs:
+				idx, ok := connToIndex[input.Player]
+				if !ok {
+					break
 				}
-
-				x1, y1, x2, y2 := dino.GetRect()
-
-				players = append(players, map[string]float32{
-					"x1": x1,
-					"y1": y1,
-					"x2": x2,
-					"y2": y2,
-				})
+				dino := dinos[idx]
+				if input.Action == "jump" && dino.OnGround && !dino.Jumping {
+					h.gameService.HandleJump(c.Request.Context(), dino)
+				}
+			default:
+				break drainInputs
 			}
-
-			msg.Message["PLAYERS"] = players
-
-			cactiRect := make([]map[string]float32, 0, len(cacti))
-
-			for _, r := range cacti {
-
-				x1, y1, x2, y2 := r.GetRect()
-
-				cactiRect = append(cactiRect, map[string]float32{
-					"x1": x1,
-					"y1": y1,
-					"x2": x2,
-					"y2": y2,
-				})
-			}
-
-			msg.Message["CACTUS_RECT"] = cactiRect
-
-			h.service.SendToBroadcast(msg)
 		}
+
+		t := <-ticker.C
+
+		duration := t.Sub(lastTime)
+		lastTime = t
+
+		// update all dinos
+		for _, dino := range dinos {
+			h.gameService.UpdateDino(c.Request.Context(), dino, duration)
+		}
+
+		h.gameService.UpdateSpeedScale(c.Request.Context(), duration)
+		cacti = h.gameService.UpdateCactus(c.Request.Context(), cacti, seed, duration)
+
+		// build broadcast message
+		var msg room.BroadcastMsg
+		msg.Message = make(map[string]any)
+		msg.RoomID = roomID
+
+		players := make([]map[string]float32, 0, len(dinos))
+		lost := false
+
+		for _, dino := range dinos {
+			if h.gameService.CheckLost(c.Request.Context(), dino, cacti) {
+				log.Println("player lost")
+				lost = true
+				break
+			}
+			x1, y1, x2, y2 := dino.GetRect()
+			players = append(players, map[string]float32{
+				"x1": x1, "y1": y1, "x2": x2, "y2": y2,
+			})
+		}
+
+		if lost {
+			// notify clients then exit
+			msg.Message["GAME_OVER"] = true
+			h.service.SendToBroadcast(msg)
+			ws.Close()
+			return
+		}
+
+		msg.Message["PLAYERS"] = players
+
+		cactiRect := make([]map[string]float32, 0, len(cacti))
+		for _, r := range cacti {
+			x1, y1, x2, y2 := r.GetRect()
+			cactiRect = append(cactiRect, map[string]float32{
+				"x1": x1, "y1": y1, "x2": x2, "y2": y2,
+			})
+		}
+		msg.Message["CACTUS_RECT"] = cactiRect
+
+		h.service.SendToBroadcast(msg)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 
 	"github.com/gorilla/websocket"
+	"github.com/mahimapatel13/dino-war/internal/domain/game"
 )
 
 type service struct {
@@ -18,10 +19,11 @@ type service struct {
 type Service interface {
 	Get(ctx context.Context, roomID string) ([]Participant, error)
 	CreateRoom(ctx context.Context) string
-	InsertIntoRoom(ctx context.Context, roomID string, host bool, conn *websocket.Conn)
+	InsertIntoRoom(ctx context.Context, roomID string, host bool, conn *websocket.Conn) Participant
 	DeleteRoom(ctx context.Context, roomID string)
 	SendToBroadcast(msg BroadcastMsg)
 	GetSeed(ctx context.Context, roomID string) (int, error)
+	GetOrCreateInputChannel(ctx context.Context, roomID string) chan game.PlayerInput
 }
 
 
@@ -43,35 +45,38 @@ func (s *service) SendToBroadcast(msg BroadcastMsg) {
     return
 }
 
-func (s *service) broadcaster() {
-
-	for {
-		msg := <-s.queue
-
-		for _, client := range s.allRooms.Map[msg.RoomID] {
-
-			// log.Println("------------------")
-			for key, _ := range msg.Message {
-				// log.Printf("Key: %s | Value: %v\n", key, value)
-				if key == "focus" {
-
-				} else if key == "break" {
-				}
-			}
-			// log.Println(client.Conn, msg.Client)
-			if client.Conn != msg.Client {
-				err := client.Conn.WriteJSON(msg.Message)
-
-				if err != nil {
-					log.Println(err)
-					client.Conn.Close()
-				}
-			}
-		}
+func (s *service) GetOrCreateInputChannel(ctx context.Context, roomID string) chan game.PlayerInput {
+	s.allRooms.Mutex.Lock()
+	defer s.allRooms.Mutex.Unlock()
+ 
+	if ch, ok := s.allRooms.Inputs[roomID]; ok {
+		return ch
 	}
-
+ 
+	ch := make(chan game.PlayerInput, 8)
+	s.allRooms.Inputs[roomID] = ch
+	return ch
 }
 
+func (s *service) broadcaster() {
+    for {
+        msg := <-s.queue
+
+        s.allRooms.Mutex.RLock()
+        clients := s.allRooms.Map[msg.RoomID]
+        s.allRooms.Mutex.RUnlock()
+
+        for _, client := range clients {
+            if msg.Client != nil && client.Conn == msg.Client {
+                continue
+            }
+            select {
+            case client.Send <- msg.Message:
+            default:
+            }
+        }
+    }
+}
 // Get will return the array of participants in the room
 func (s *service) Get(ctx context.Context, roomID string) ([]Participant, error) {
 	s.allRooms.Mutex.RLock()
@@ -136,7 +141,7 @@ func (s *service) CreateRoom(ctx context.Context) string {
 }
 
 // InsertIntoRoom will insert a participant and add it in the hashmao
-func (s *service) InsertIntoRoom(ctx context.Context, roomID string, host bool, conn *websocket.Conn) {
+func (s *service) InsertIntoRoom(ctx context.Context, roomID string, host bool, conn *websocket.Conn)  Participant {
 	s.allRooms.Mutex.Lock()
 	defer s.allRooms.Mutex.Unlock()
 
@@ -144,10 +149,13 @@ func (s *service) InsertIntoRoom(ctx context.Context, roomID string, host bool, 
 	p := Participant{
 		Host: host,
 		Conn: conn,
+		Send: make(chan map[string]any, 4),
 	}
 
 	log.Println("Inserting into Room with RoomID: ", roomID)
 	s.allRooms.Map[roomID] = append(s.allRooms.Map[roomID], p)
+
+	return p
 }
 
 // DeleteRoom delets the room with roomID
