@@ -229,7 +229,7 @@ func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 			}
 			x1, y1, x2, y2 := dino.GetRect()
 			players = append(players, map[string]float32{
-				"x1": x1, "y1": y1, "x2": x2, "y2": y2, "score" : math.Floor(float64(dino.Score))
+				"x1": x1, "y1": y1, "x2": x2, "y2": y2, "score" : float32(math.Floor(float64(dino.Score))),
 			})
 		}
 
