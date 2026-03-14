@@ -47,7 +47,7 @@ func NewService() Service {
 	ground_height = 300
 
 	// physics (pixels per second)
-	speed = 50
+	speed = 10
 	gravity = 1200
 	jump_speed = 450
 
@@ -55,8 +55,8 @@ func NewService() Service {
 	score_var = 0.1
 
 	// cactus spawn time (seconds)
-	cactus_interval_min = 1
-	cactus_interval_max = 6.0
+	cactus_interval_min = 5
+	cactus_interval_max = 10
 
 	dino_default_x = 40
 

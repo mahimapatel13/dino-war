@@ -25,6 +25,7 @@ func main(){
 	r.Use(cors.New(cors.Config{
         AllowOrigins:     []string{
 			"http://localhost:5173",
+			"http://localhost:8081",
 			"https://dino-war-frontend-black.vercel.app",
 		},
         AllowMethods:     []string{"POST", "GET", "OPTIONS", "PUT", "DELETE"},
