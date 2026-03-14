@@ -26,6 +26,7 @@ func main(){
         AllowOrigins:     []string{
 			"http://localhost:5173",
 			"http://localhost:8081",
+			"http://localhost:8080",
 			"https://dino-war-frontend-black.vercel.app",
 		},
         AllowMethods:     []string{"POST", "GET", "OPTIONS", "PUT", "DELETE"},

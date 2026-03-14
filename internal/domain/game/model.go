@@ -1,6 +1,6 @@
 package game
 
-import 	"github.com/gorilla/websocket"
+import "github.com/gorilla/websocket"
 
 // Rect represents the coordinates
 // of the player (Dino) or the obstacle
@@ -15,6 +15,7 @@ type Rect struct {
 // Dino struct represents the dino element
 type Dino struct {
 	ID        int
+	Lost      bool
 	Jumping   bool
 	OnGround  bool
 	Score     float32
@@ -23,8 +24,8 @@ type Dino struct {
 }
 
 type PlayerInput struct {
-    Player   *websocket.Conn
-    Action string
+	Player *websocket.Conn
+	Action string
 }
 
 func (r Rect) GetRect() (x1, y1, x2, y2 float32) {

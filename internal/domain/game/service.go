@@ -37,6 +37,7 @@ type Service interface {
 	CheckLost(ctx context.Context, dino *Dino, cactus []Rect) bool
 	HandleJump(ctx context.Context, dino *Dino)
 	UpdateSpeedScale(ctx context.Context, duration time.Duration)
+	ResetSpeedScale(ctx context.Context)
 }
 
 func NewService() Service {
@@ -49,14 +50,14 @@ func NewService() Service {
 	// physics (pixels per second)
 	speed = 80
 	gravity = 1200
-	jump_speed = 600
+	jump_speed = 550
 
 	// score growth
 	score_var = 0.1
 
 	// cactus spawn time (seconds)
-	cactus_interval_min = 5
-	cactus_interval_max = 10
+	cactus_interval_min = 1
+	cactus_interval_max = 4
 
 	dino_default_x = 40
 
@@ -67,6 +68,12 @@ func NewService() Service {
 	}
 }
 
+
+
+func (s *service) ResetSpeedScale(ctx context.Context){
+	s.speedScale = 1;
+	return
+}
 func (s *service) NewCacti(ctx context.Context) []Rect {
 	var cacti []Rect
 	return cacti
@@ -114,7 +121,10 @@ func (s *service) UpdateDino(ctx context.Context, dino *Dino, duration time.Dura
 		}
 	}
 
-	dino.Score += delta / score_var
+	if dino.Lost == false {
+		dino.Score += delta / score_var
+	}
+	return 
 }
 
 // UpdateCactus spawns new cacti and deleted the cacti that have
@@ -128,7 +138,7 @@ func (s *service) UpdateCactus(ctx context.Context, cactus []Rect, seed int, dur
 
 	var res []Rect
 
-	if s.nextCactusTime <= 0 {
+	if s.nextCactusTime <= 0  {
 		newCactus := s.newCactus(ctx)
 
 		res = append(res, newCactus)
@@ -174,6 +184,7 @@ func (s *service) CheckLost(ctx context.Context, dino *Dino, cactus []Rect) bool
 			dy1 < cy2 &&
 			dy2 > cy1 {
 
+			dino.Lost = true
 			return true
 		}
 	}

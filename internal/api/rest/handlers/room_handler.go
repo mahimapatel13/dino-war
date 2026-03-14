@@ -72,6 +72,7 @@ var upgrader = websocket.Upgrader{
 }
 
 // JoinRoomRequest will join the client in a particular room
+// JoinRoomRequest will join the client in a particular room
 func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 
 	roomID := c.Param("roomID")
@@ -91,7 +92,6 @@ func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 		log.Println("upgrade error:", err)
 		return
 	}
-
 	defer ws.Close()
 
 	participants, err := h.service.Get(c.Request.Context(), roomID)
@@ -120,29 +120,40 @@ func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 	participants, _ = h.service.Get(c.Request.Context(), roomID)
 	log.Printf("room %s now has %d players", roomID, len(participants))
 
-
 	isHost := participants[0].Conn == ws
+
+	// done is closed when the host game loop exits (disconnect or fatal error).
+	// The guest blocks on it so both connections exit together cleanly.
+	done := h.service.GetOrCreateDoneChannel(c.Request.Context(), roomID)
 	inputs := h.service.GetOrCreateInputChannel(c.Request.Context(), roomID)
 
-	// read loop for THIS connection — runs for both host and guest
+	// read loop runs for BOTH host and guest
+	// exits when WS errors (client disconnected) and signals done
 	go func() {
+		defer func() {
+			// signal everyone to exit when this connection's read loop dies
+			h.service.CloseDoneChannel(c.Request.Context(), roomID)
+			log.Printf("player disconnected from room %s", roomID)
+		}()
+
 		for {
 			var msg map[string]any
-
-			err := ws.ReadJSON(&msg)
-			if err != nil {
+			if err := ws.ReadJSON(&msg); err != nil {
 				log.Println("read error:", err)
 				return
 			}
 
 			if msg["JMP"] == "true" {
-				log.Println("jmp!")
-				// non-blocking send so a stalled game loop doesn't block reads
 				select {
-				case inputs <- game.PlayerInput{
-					Player: ws,
-					Action: "jump",
-				}:
+				case inputs <- game.PlayerInput{Player: ws, Action: "jump"}:
+				default:
+				}
+			}
+
+			if msg["RETRY"] == "true" {
+				log.Println("retry request from", ws.RemoteAddr())
+				select {
+				case inputs <- game.PlayerInput{Player: ws, Action: "retry"}:
 				default:
 				}
 			}
@@ -150,99 +161,153 @@ func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 	}()
 
 	// broadcast game start to both players
-	start := room.BroadcastMsg{
-		Message: map[string]any{
-			"GAME_START": true,
-			"SEED":       seed,
-		},
-		RoomID: roomID,
-	}
-	h.service.SendToBroadcast(start)
+	h.service.SendToBroadcast(room.BroadcastMsg{
+		Message: map[string]any{"GAME_START": true, "SEED": seed},
+		RoomID:  roomID,
+	})
 
 	if !isHost {
 		log.Println("guest connected, waiting...")
-		// block until connection closes
-		select {}
+		<-done
+		log.Println("guest exiting — done channel closed")
+		// cleanup room from guest side if host already left
+		h.service.DeleteRoom(c.Request.Context(), roomID)
+		return
 	}
 
 	log.Println("host running game loop")
 
-	dinos := make([]*game.Dino, len(participants))
-	connToIndex := make(map[*websocket.Conn]int)
-	for i, p := range participants {
-		d := h.gameService.NewDino(c.Request.Context())
-		dinos[i] = &d
-		connToIndex[p.Conn] = i
+	// cleanup room when host exits for ANY reason
+	defer func() {
+		h.service.DeleteRoom(c.Request.Context(), roomID)
+		log.Printf("room %s cleaned up by host", roomID)
+	}()
+
+	newGameState := func() ([]*game.Dino, []game.Rect, map[*websocket.Conn]int) {
+		pts, _ := h.service.Get(c.Request.Context(), roomID)
+		d := make([]*game.Dino, len(pts))
+		idx := make(map[*websocket.Conn]int, len(pts))
+		for i, p := range pts {
+			dino := h.gameService.NewDino(c.Request.Context())
+			d[i] = &dino
+			idx[p.Conn] = i
+		}
+		return d, h.gameService.NewCacti(c.Request.Context()), idx
 	}
 
-	cacti := h.gameService.NewCacti(c.Request.Context())
+	dinos, cacti, connToIndex := newGameState()
+	ghosted     := make([]bool, len(dinos))
+	retryVotes  := make(map[*websocket.Conn]bool)
+	gameOver    := false
 
 	ticker := time.NewTicker(16 * time.Millisecond)
 	defer ticker.Stop()
-
 	lastTime := time.Now()
 
 	for {
+		select {
+		case <-done:
+			log.Println("host exiting — done channel closed")
+			return
+		default:
+		}
+
+		// drain all pending inputs non-blocking
 		drainInputs:
 		for {
 			select {
 			case input := <-inputs:
-				idx, ok := connToIndex[input.Player]
-				if !ok {
-					break
+				switch input.Action {
+
+				case "jump":
+					idx, ok := connToIndex[input.Player]
+					if !ok || ghosted[idx] {
+						break
+					}
+					dino := dinos[idx]
+					if dino.OnGround && !dino.Jumping {
+						h.gameService.HandleJump(c.Request.Context(), dino)
+					}
+
+				case "retry":
+					// accept retry votes at any time after first death
+					retryVotes[input.Player] = true
+					log.Printf("retry votes: %d/2", len(retryVotes))
+
+					if len(retryVotes) >= 2 {
+						log.Println("both players retried — resetting")
+						h.gameService.ResetSpeedScale(c.Request.Context())
+						dinos, cacti, connToIndex = newGameState()
+						ghosted    = make([]bool, len(dinos))
+						retryVotes = make(map[*websocket.Conn]bool)
+						gameOver   = false
+						h.service.SendToBroadcast(room.BroadcastMsg{
+							Message: map[string]any{"GAME_START": true, "SEED": seed},
+							RoomID:  roomID,
+						})
+					}
+					
 				}
-				dino := dinos[idx]
-				if input.Action == "jump" && dino.OnGround && !dino.Jumping {
-					h.gameService.HandleJump(c.Request.Context(), dino)
-				}
+
 			default:
 				break drainInputs
 			}
 		}
 
+		// block on ticker
 		t := <-ticker.C
-
 		duration := t.Sub(lastTime)
 		lastTime = t
 
-		// update all dinos
+		if gameOver {
+			continue
+		}
+
 		for _, dino := range dinos {
 			h.gameService.UpdateDino(c.Request.Context(), dino, duration)
 		}
-
 		h.gameService.UpdateSpeedScale(c.Request.Context(), duration)
 		cacti = h.gameService.UpdateCactus(c.Request.Context(), cacti, seed, duration)
 
-		// build broadcast message
-		var msg room.BroadcastMsg
-		msg.Message = make(map[string]any)
-		msg.RoomID = roomID
-
-		players := make([]map[string]float32, 0, len(dinos))
-		lost := false
-
-		for _, dino := range dinos {
-			if h.gameService.CheckLost(c.Request.Context(), dino, cacti) {
-				log.Println("player lost")
-				lost = true
-				break
+		allGhosted := true
+		for i, dino := range dinos {
+			if ghosted[i] {
+				continue
 			}
+			if h.gameService.CheckLost(c.Request.Context(), dino, cacti) {
+				log.Printf("player %d lost — ghosted", i)
+				ghosted[i] = true
+				h.service.SendToBroadcast(room.BroadcastMsg{
+					Message: map[string]any{"PLAYER_LOST": i},
+					RoomID:  roomID,
+				})
+			}
+			if !ghosted[i] {
+				allGhosted = false
+			}
+		}
+
+		if allGhosted {
+			gameOver = true
+			h.service.SendToBroadcast(room.BroadcastMsg{
+				Message: map[string]any{"GAME_OVER": true},
+				RoomID:  roomID,
+			})
+			continue
+		}
+
+		players := make([]map[string]any, 0, len(dinos))
+		for i, dino := range dinos {
 			x1, y1, x2, y2 := dino.GetRect()
-			players = append(players, map[string]float32{
-				"x1": x1, "y1": y1, "x2": x2, "y2": y2, "score" : float32(math.Floor(float64(dino.Score))),
+			players = append(players, map[string]any{
+				"x1":      x1,
+				"y1":      y1,
+				"x2":      x2,
+				"y2":      y2,
+				"score":   math.Floor(float64(dino.Score)),
+				"ghosted": ghosted[i],
 			})
 		}
-
-		if lost {
-			// notify clients then exit
-			msg.Message["GAME_OVER"] = true
-			h.service.SendToBroadcast(msg)
-			ws.Close()
-			return
-		}
-
-		msg.Message["PLAYERS"] = players
-		
 
 		cactiRect := make([]map[string]float32, 0, len(cacti))
 		for _, r := range cacti {
@@ -251,8 +316,13 @@ func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 				"x1": x1, "y1": y1, "x2": x2, "y2": y2,
 			})
 		}
-		msg.Message["CACTUS_RECT"] = cactiRect
 
-		h.service.SendToBroadcast(msg)
+		h.service.SendToBroadcast(room.BroadcastMsg{
+			Message: map[string]any{
+				"PLAYERS":     players,
+				"CACTUS_RECT": cactiRect,
+			},
+			RoomID: roomID,
+		})
 	}
 }

@@ -26,6 +26,7 @@ type roomMap struct {
 	Map   map[string][]Participant
     Seed  map[string]int
 	Inputs map[string]chan game.PlayerInput
+	Done   map[string]chan struct{} 
 }
 
 // one goroutine per client, owns all writes to that socket
@@ -43,4 +44,5 @@ func (r *roomMap) init() {
 	r.Map = make(map[string][]Participant)
     r.Seed = make(map[string]int)
 	r.Inputs = make(map[string]chan game.PlayerInput)
+	r.Done = make(map[string]chan struct{})
 }

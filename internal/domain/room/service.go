@@ -24,6 +24,8 @@ type Service interface {
 	SendToBroadcast(msg BroadcastMsg)
 	GetSeed(ctx context.Context, roomID string) (int, error)
 	GetOrCreateInputChannel(ctx context.Context, roomID string) chan game.PlayerInput
+	GetOrCreateDoneChannel(ctx context.Context, roomID string) chan struct{} 
+	CloseDoneChannel(ctx context.Context, roomID string)
 }
 
 
@@ -43,6 +45,39 @@ func NewService() Service {
 func (s *service) SendToBroadcast(msg BroadcastMsg) {
     s.queue <- msg
     return
+}
+
+
+// GetOrCreateDoneChannel returns a channel that is closed when the room should shut down.
+func (s *service) GetOrCreateDoneChannel(ctx context.Context, roomID string) chan struct{} {
+	s.allRooms.Mutex.Lock()
+	defer s.allRooms.Mutex.Unlock()
+
+	if ch, ok := s.allRooms.Done[roomID]; ok {
+		return ch
+	}
+
+	ch := make(chan struct{})
+	s.allRooms.Done[roomID] = ch
+	return ch
+}
+
+// CloseDoneChannel closes the done channel for a room, signalling all listeners to exit.
+func (s *service) CloseDoneChannel(ctx context.Context, roomID string) {
+	s.allRooms.Mutex.Lock()
+	defer s.allRooms.Mutex.Unlock()
+
+	ch, ok := s.allRooms.Done[roomID]
+	if !ok {
+		return
+	}
+
+	// close only once — use a recover to be safe
+	defer func() { recover() }()
+	close(ch)
+
+	// remove so next game gets a fresh channel
+	delete(s.allRooms.Done, roomID)
 }
 
 func (s *service) GetOrCreateInputChannel(ctx context.Context, roomID string) chan game.PlayerInput {
