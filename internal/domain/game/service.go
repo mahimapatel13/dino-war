@@ -56,7 +56,7 @@ func NewService() Service {
 	score_var = 0.1
 
 	// cactus spawn time (seconds)
-	cactus_interval_min = 1
+	cactus_interval_min = 1.7
 	cactus_interval_max = 4
 
 	dino_default_x = 40

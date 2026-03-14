@@ -72,7 +72,6 @@ var upgrader = websocket.Upgrader{
 }
 
 // JoinRoomRequest will join the client in a particular room
-// JoinRoomRequest will join the client in a particular room
 func (h *RoomHandler) JoinRoomRequest(c *gin.Context) {
 
 	roomID := c.Param("roomID")
