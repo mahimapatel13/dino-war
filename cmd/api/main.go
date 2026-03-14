@@ -42,7 +42,7 @@ func main(){
 
     // Configure server with timeouts
 	srv := &http.Server{
-		Addr:         ":8080",
+		Addr:         ":8081",
 		Handler:      r,
 		ReadTimeout:  time.Duration(10) * time.Second,
 		WriteTimeout: time.Duration(10) * time.Second,
@@ -60,7 +60,7 @@ func main(){
 	
 	// Start server in a goroutine
 	go func() {
-		log.Println("Server starting", "port", 8080)
+		log.Println("Server starting", "port", 8081)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal("Server failed to start", "error", err)
 		}
