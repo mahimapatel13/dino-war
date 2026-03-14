@@ -48,8 +48,8 @@ func NewService() Service {
 
 	// physics (pixels per second)
 	speed = 80
-	gravity = 1200
-	jump_speed = 450
+	gravity = 1000
+	jump_speed = 600
 
 	// score growth
 	score_var = 0.1
